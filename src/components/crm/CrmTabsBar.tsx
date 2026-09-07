@@ -35,7 +35,7 @@
  * l'AA. C'est l'aplat qui porte, pas l'encre.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
@@ -44,6 +44,7 @@ import type { CrmPalette } from './tokens'
 import { MXC_SYSTEM, encreSur } from '@/components/megga-x-crm/tokens'
 import { useCrmTabs, useCrmTabBadges } from '@/hooks/useCrmTabs'
 import { crmChipMaxWidth, crmChipMinWidth, crmDragBounds, crmPinnedCount, crmTabLibelle, crmVisibleWindow, type CrmTab } from '@/lib/crmTabs'
+import { setCrmStripDebut, setCrmStripLargeur, useCrmStripView } from '@/lib/crmStripView'
 import { useAiPanel } from '@/hooks/useAiPanel'
 import { useEcranActif } from '@/hooks/useEcranActif'
 import { useAgentNotifications } from '@/hooks/useAgentNotifications'
@@ -131,39 +132,65 @@ const SONDE_MS = 400
  * bloquée à huit puces sur un écran de 1600 px qui en tenait onze, sans un signe.
  *
  * On remesure donc sur les SIGNAUX qui font vraiment bouger la largeur :
- *   • le montage (`queueMicrotask` — il tire toujours, contrairement à rAF, gelé dès
- *     que le rendu l'est : onglet d'arrière-plan, volet d'aperçu masqué) ;
+ *   • le montage ;
  *   • le redimensionnement de la fenêtre ;
+ *   • le RETOUR SUR LA PAGE, après qu'elle a été en arrière-plan ;
  *   • l'ouverture du dock MEGGA AI et le repli de la barre latérale, qui sont des
  *     ÉTATS que ce composant connaît déjà — on n'a pas besoin de les observer, il
  *     suffit d'en dépendre ;
  *   • le nombre d'onglets, qui refait couler les puces.
  *
- * ⚠ Et une sonde rAF BORNÉE après chaque signal : le pli de la barre latérale dure
- * 250 ms, donc la largeur finale n'est pas celle de l'instant du clic. Bornée à
+ * ⛔ LE RETOUR EST UN SIGNAL DEPUIS QUE LA LARGEUR EST PARTAGÉE, et c'est une
+ * dette que ce chantier a lui-même créée. Tant que chaque barre gardait sa
+ * mesure en `useState`, une valeur périmée mourait avec son composant : la barre
+ * suivante repartait de zéro et remesurait. Elle vit maintenant dans
+ * `crmStripView`, au-dessus des instances — donc une mesure fausse SURVIT aux
+ * montages, et rien ne la révoque.
+ *
+ * Or une page en arrière-plan est précisément là où une mesure devient fausse
+ * sans que personne ne le voie : le navigateur y gèle le rendu, et un
+ * `resize` — fenêtre réarrangée, écran débranché, zoom changé — s'y traite sur
+ * une mise en page qui n'est plus rafraîchie. Au retour, aucun montage n'est
+ * garanti (basculer entre deux onglets DÉJÀ vivants n'en monte aucun) : sans ce
+ * signal, la bande resterait cadrée sur la largeur d'avant l'absence.
+ *
+ * ⛔ `useLayoutEffect`, ET LA MESURE EST SYNCHRONE — c'est ce point-là qui a changé
+ * le 7 septembre 2026. Elle passait par `queueMicrotask`, choisi parce qu'il tire
+ * toujours là où rAF est gelé (volet masqué, onglet d'arrière-plan). Il tire bien,
+ * mais l'écriture qui en sort est ordonnancée par React dans une TÂCHE suivante :
+ * la frame déjà rendue — celle où `largeur` vaut encore 0, donc `vis` vaut 1 — peut
+ * être PEINTE avant la correction. Mesuré à l'écran, piste : 1166 → 94 → 1166 px.
+ * Une mesure faite dans un effet de mise en page tombe avant la peinture, et React
+ * y vide les mises à jour de façon synchrone : l'état intermédiaire n'existe plus.
+ *
+ * ⚠ La sonde rAF BORNÉE reste, et elle reste en rAF : le pli de la barre latérale
+ * dure 250 ms, donc la largeur finale n'est pas celle de l'instant du clic. C'est un
+ * suivi d'animation, pas la mesure d'ouverture — la geler avec le rendu est sans
+ * conséquence, puisque rien n'est peint pendant ce temps-là. Bornée à
  * {@link SONDE_MS}, jamais continue.
  *
- * ⚠ Le `setState` court-circuite sur l'égalité : une largeur stable ne provoque aucun
- * re-rendu, sans quoi la mesure et le rendu s'entretiendraient.
+ * ⚠ La largeur est rangée dans `crmStripView`, PAS dans un `useState` : trois barres
+ * sont montées à la fois et une barre neuve doit hériter de ce qu'a mesuré celle
+ * qu'elle remplace, sans quoi elle repart de zéro à chaque bascule. L'écriture
+ * court-circuite sur l'égalité — une largeur stable ne provoque aucun rendu.
  */
 function useLargeurPuces(
   piste: React.RefObject<HTMLDivElement | null>,
   vide: React.RefObject<HTMLDivElement | null>,
   signaux: unknown[],
 ): number {
-  const [largeur, setLargeur] = useState(0)
-  useEffect(() => {
+  const { largeur } = useCrmStripView()
+  useLayoutEffect(() => {
     const p = piste.current
     if (!p) return
     const mesurer = () => {
       // Place OCCUPÉE par les puces + place ENCORE LIBRE : c'est ce dont la piste
       // pourrait disposer si elle en avait besoin.
-      const l = Math.round(
+      setCrmStripLargeur(Math.round(
         p.getBoundingClientRect().width + (vide.current?.getBoundingClientRect().width ?? 0),
-      )
-      setLargeur((prev) => (prev === l ? prev : l))
+      ))
     }
-    queueMicrotask(mesurer)
+    mesurer()
 
     let brut = 0
     const debut = performance.now()
@@ -174,7 +201,29 @@ function useLargeurPuces(
     brut = requestAnimationFrame(sonde)
 
     window.addEventListener('resize', mesurer)
-    return () => { cancelAnimationFrame(brut); window.removeEventListener('resize', mesurer) }
+
+    // ⚠ La sonde rAF est RELANCÉE au retour, pas seulement la mesure : le
+    // navigateur rend sa première frame après le retour, et une mise en page
+    // qu'il n'entretenait plus peut se stabiliser sur quelques frames. C'est le
+    // même motif que le pli de la barre latérale — d'où la même sonde bornée.
+    const auRetour = () => {
+      if (document.visibilityState !== 'visible') return
+      mesurer()
+      cancelAnimationFrame(brut)
+      const t0 = performance.now()
+      const encore = () => {
+        mesurer()
+        if (performance.now() - t0 < SONDE_MS) brut = requestAnimationFrame(encore)
+      }
+      brut = requestAnimationFrame(encore)
+    }
+    document.addEventListener('visibilitychange', auRetour)
+
+    return () => {
+      cancelAnimationFrame(brut)
+      window.removeEventListener('resize', mesurer)
+      document.removeEventListener('visibilitychange', auRetour)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [piste, vide, ...signaux])
   return largeur
@@ -340,7 +389,10 @@ export function CrmTabsBar({ sp, dark, setDark, badges: override }: Props) {
   // qui n'a besoin que d'un glyphe. Le quart droit de la bande est déjà la grappe
   // des commandes d'état (✦ et le thème) — la cloche y est chez elle, et la
   // latérale récupère une ligne.
-  const { items: notifs, unreadCount, markRead, markAllRead } = useAgentNotifications()
+  // ⚠ Le second argument est la contrepartie des écrans vivants : six bandes sont
+  // montées, une seule est regardée, et seule celle-là ouvre le canal Realtime.
+  // La lecture, elle, est partagée par React Query — voir le hook.
+  const { items: notifs, unreadCount, markRead, markAllRead } = useAgentNotifications(30, ecranActif)
   const [notifOuvert, setNotifOuvert] = useState(false)
   const notifAncre = useRef<HTMLDivElement | null>(null)
   // Clic dehors et Échap ferment la popover — elle vivait dans la barre latérale,
@@ -405,15 +457,28 @@ export function CrmTabsBar({ sp, dark, setDark, badges: override }: Props) {
    * chaque bascule et les puces sauteraient sous le curseur. On le lit au rendu
    * et on ne le RANGE qu'ensuite — la fenêtre rendue est déjà la corrigée, donc
    * aucun clignotement.
+   *
+   * ⛔ ET IL EST PARTAGÉ, PAS LOCAL — corrigé le 7 septembre 2026. Un état local
+   * donnait à chacune des trois barres montées SON cadrage : la bande qui
+   * s'affiche n'est alors pas celle qu'on regardait. Mesuré, 15 onglets sur
+   * 820 px : la bande passait de `0..8` à `6..14` sur un clic qui visait le
+   * rang 8 — déjà visible. Six rangs de glissement pour rien, et l'onglet qu'on
+   * venait de quitter poussé hors champ. Le cadrage décrit la BANDE, il n'a
+   * jamais été une position d'écran.
    */
-  const [debut, setDebut] = useState(0)
+  const { debut } = useCrmStripView()
   const { visibles, caches, debut: debutCorrige } = useMemo(
     () => crmVisibleWindow(nTabs, active, vis, debut, nPin),
     [nTabs, active, vis, debut, nPin],
   )
   useEffect(() => {
-    if (debutCorrige !== debut) setDebut(debutCorrige)
-  }, [debutCorrige, debut])
+    // ⛔ Tant que rien n'est mesuré, on NE RANGE RIEN. `vis` vaut alors 1 (son
+    // plancher), et le cadrage que `crmVisibleWindow` en tire est celui d'une
+    // bande à une seule puce : le ranger le lèguerait à la vraie largeur, qui
+    // repartirait de là. C'est exactement ce qui déplaçait la bande de six rangs.
+    if (!largeur) return
+    if (debutCorrige !== debut) setCrmStripDebut(debutCorrige)
+  }, [debutCorrige, debut, largeur])
 
   /**
    * Largeur RÉELLEMENT rendue d'une puce — celle qui décide du sort de la croix.

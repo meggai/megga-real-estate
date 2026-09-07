@@ -49,7 +49,6 @@ import { useAuth } from '@/hooks/useAuth'
 import { useAgencySettings } from '@/hooks/useAgencySettings'
 import { useAgencyObjective } from '@/hooks/useAgencyObjective'
 import { useAiPanel } from '@/hooks/useAiPanel'
-import { openCrmSearch } from './search/openSearch'
 import { openHelpFor } from '@/lib/help-articles'
 import { RelanceSession } from './today/RelanceSession'
 import CrmProfileDropdown from './profile/CrmProfileDropdown'
@@ -174,9 +173,22 @@ function SidebarRow({
 // ⚠ Repliée, la barre n'a pas 84 px pour un mot : le sur-titre cède la place à
 // un FILET. Sans lui, dix-sept glyphes s'alignent sans respiration et la colonne
 // redevient la liste indifférenciée qu'on vient de découper.
+//
+// ⛔ LES SUR-TITRES SONT RETIRÉS DEPUIS LE 7 SEPTEMBRE 2026 (Julien : « enlève
+// les catégories »). Le découpage en groupes SURVIT — il ordonne la liste, il
+// nomme les groupes pour un lecteur d'écran (`role="group"` + `aria-label`), et
+// c'est lui que rend la grille de la page d'onglet neuf. Ce qui part est le mot
+// affiché, rien d'autre : on revient à ce que la référence de design prescrivait
+// avant le 4 septembre — « aucune séparation visuelle entre les groupes, seul
+// l'ordre les signale ».
+//
+// ⚠ ET LE FILET DU MODE REPLIÉ RESTE. Ce n'est pas une catégorie — c'est un
+// trait, dans une colonne où aucun mot n'est affiché de toute façon. Le retirer
+// coûterait la seule respiration de dix-sept glyphes empilés, sans rien rendre
+// à personne.
 
-function GroupLabel({ label, collapsed, first = false, sp }: {
-  label: string; collapsed: boolean; first?: boolean; sp: CrmPalette
+function GroupLabel({ collapsed, first = false, sp }: {
+  collapsed: boolean; first?: boolean; sp: CrmPalette
 }) {
   if (collapsed) {
     // ⚠ Rien au-dessus du PREMIER groupe : un filet juste sous le bloc d'agence
@@ -190,17 +202,9 @@ function GroupLabel({ label, collapsed, first = false, sp }: {
       }} />
     )
   }
-  return (
-    <div style={{
-      // ⚠ Serré volontairement : cinq sur-titres coûtent de la hauteur, et la
-      // liste défile déjà. 4 px au-dessus suffisent à détacher le titre de la
-      // ligne précédente — c'est le blanc du groupe qui sépare, pas le padding.
-      padding: 'var(--crm-space-xs) var(--crm-space-2xl) var(--crm-space-2xs)',
-      fontSize: 'var(--crm-text-sm)', fontWeight: 600, letterSpacing: 0.2,
-      color: sp.sub, userSelect: 'none',
-      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-    }}>{label}</div>
-  )
+  // Dépliée : plus rien. Le groupe reste un groupe pour l'ordre et pour
+  // l'accessibilité, il n'a simplement plus de titre visible.
+  return null
 }
 
 // ─── Encart de synthèse — l'objectif de la période ─────────────────────────
@@ -432,12 +436,18 @@ export function CrmSidebar({ active, helpKey, sp, dark, setDark, onCmd }: CrmSid
   }
 
   // Outils transverses. Les PAGES sont au-dessus ; aucune ligne n'est reprise
-  // dans les deux groupes. ⚠ La ligne « Créer » du rail appelait `onCmd`, que
-  // presque chaque page câblait sur `openCrmSearch` — le même geste que la
-  // loupe, deux lignes plus haut. Elle n'est donc rendue que lorsque l'écran
-  // fournit réellement un geste de création.
+  // dans les deux groupes.
+  //
+  // ⛔ « RECHERCHER » N'EST PLUS ICI (7 septembre 2026, Julien : « on n'a plus
+  // vraiment besoin, comme on ouvre un onglet on a déjà la recherche »). La page
+  // d'onglet neuf rend `CrmSearch` dans son corps, champ focalisé ; ⌘K y mène,
+  // et le « + » de la bande aussi. Une loupe qui ouvre un voile par-dessus
+  // l'écran faisait un second chemin vers la même chose — celui-là même dont la
+  // refonte du champ devait sortir.
+  //
+  // ⚠ La ligne « Créer » (`onCmd`), elle, reste : elle n'est rendue que lorsque
+  // l'écran fournit réellement un geste de création.
   const tools: { id: string; icon: string; label: string; action: () => void }[] = [
-    { id: 'search', icon: 'search', label: t('actions.search'), action: () => openCrmSearch() },
     ...(onCmd ? [{ id: 'add', icon: 'plus', label: t('actions.create'), action: onCmd }] : []),
     { id: 'relances', icon: 'phone', label: t('nav.callbacksToday'), action: () => setRelanceOpen(true) },
     { id: 'import', icon: 'download', label: t('nav.importLeads'), action: () => { if (!enBanc) navigate('/dashboard/import-lead') } },
@@ -615,7 +625,7 @@ export function CrmSidebar({ active, helpKey, sp, dark, setDark, onCmd }: CrmSid
           <nav aria-label={t('nav.mainNav')} style={{ display: 'flex', flexDirection: 'column' }}>
             {CRM_SIDEBAR_GROUPS.map((g, i) => (
               <div key={g.labelKey} role="group" aria-label={t(g.labelKey)}>
-                <GroupLabel label={t(g.labelKey)} collapsed={collapsed} first={i === 0} sp={sp} />
+                <GroupLabel collapsed={collapsed} first={i === 0} sp={sp} />
                 <div style={listStyle}>
                   {g.items.map(s => (
                     <SidebarRow
@@ -634,7 +644,7 @@ export function CrmSidebar({ active, helpKey, sp, dark, setDark, onCmd }: CrmSid
           </nav>
 
           <div role="group" aria-label={t('nav.sectionTools')}>
-            <GroupLabel label={t('nav.sectionTools')} collapsed={collapsed} sp={sp} />
+            <GroupLabel collapsed={collapsed} sp={sp} />
             <div style={listStyle}>
             {tools.map(it => (
               <SidebarRow

@@ -607,10 +607,17 @@ pour la barre latérale. Backend de la bande : table `crm_open_tabs` + RPC
 `crm_tabs_save` / `crm_tabs_resolve_labels` / `crm_tab_badges`, plafond client 24 (CHECK serveur à 32,
 volontairement plus haut pour qu'un dépassement transitoire n'annule pas l'écriture en silence).
 
-⛔ **Les 20 surfaces montent `<CrmWorkspace>`, JAMAIS `<CrmSidebar>`** — mesuré :
-`grep -rl '<CrmSidebar' src/` ne rend qu'**un** fichier, `CrmWorkspace.tsx` lui-même. Une surface qui
+⛔ **Les 22 surfaces montent `<CrmWorkspace>`, JAMAIS `<CrmSidebar>`** — mesuré le 07.09.2026
+(`grep -rl '<CrmWorkspace' src/`, hors le composant lui-même et hors les trois bancs `/dev`) ;
+le point annonçait 20, il en comptait déjà 21. `grep -rl '<CrmSidebar' src/` ne rend, lui, qu'**un**
+fichier — `CrmWorkspace.tsx` lui-même. Une surface qui
 court-circuite la coquille perd la bande d'onglets **et** la variable `--crm-tabs-h`, sans qu'aucune
-porte ne rougisse. ⚠ Cette variable n'est pas décorative : `ListingWizardPage.tsx:42` calcule
+porte ne rougisse. ⛔ **QUATRE ROUTES D'ONGLET LE FAISAIENT**, mesuré le 07.09.2026 : basculer sur
+l'une d'elles faisait disparaître la bande ET la barre latérale, sans autre sortie que son propre lien
+de retour. `VisitDetailPage` (`/dashboard/visits/:id`) est corrigée — c'est une FICHE, `visit` est l'un
+des cinq genres de `crmTabRecordRef`, et les trois autres fiches portaient déjà la coquille. Les trois
+restantes gardent leur choix : `visits/new`, `transactions/:id/offre/:kind` et `import-lead` sont des
+modales de plein écran (`position: fixed`, une croix pour sortir), pas des fiches. ⚠ Cette variable n'est pas décorative : `ListingWizardPage.tsx:42` calcule
 `height: calc(100vh - 64px - var(--crm-tabs-h, 0px))`, et sans son troisième terme la page débordait de
 48 px, le pied du wizard passant sous le pli. Il en est aujourd'hui le **seul** lecteur.
 

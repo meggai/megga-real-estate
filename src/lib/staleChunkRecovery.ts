@@ -174,3 +174,61 @@ export function cacheBustedReloadUrl(href: string, now: number): string {
   url.searchParams.set('_v', String(now))
   return url.toString()
 }
+
+/**
+ * Combien de fois on retente un import dynamique avant d'abandonner, et l'attente
+ * entre deux essais.
+ *
+ * ⛔ POURQUOI RETENTER, ET POURQUOI ÇA MANQUAIT. `React.lazy` MÉMORISE la promesse
+ * de sa fabrique : un import qui échoue UNE fois échoue pour toujours, jusqu'au
+ * rechargement de la page. Un raté réseau d'une demi-seconde — le Wi-Fi qui se
+ * réveille, la 4G qui reprend, un onglet que Chrome vient de dégeler — condamne
+ * donc la route pour de bon, et la seule issue restante est celle qu'on voit :
+ * l'écran d'erreur, puis un rechargement.
+ *
+ * Retour de Julien (7 septembre 2026) : « quand je n'ai pas été un petit moment
+ * sur le CRM, puis je reviens et je change d'onglet — écran blanc, je dois
+ * recharger ». Quelques minutes d'absence : ni le jeton (une heure) ni le
+ * déchargement d'onglet ne sont en cause à cette échelle ; la fenêtre où le
+ * réseau n'est pas encore revenu, si. Et depuis que six écrans restent vivants,
+ * une bascule sur deux monte un écran neuf, donc tire un chunk.
+ *
+ * ⚠ 350 puis 900 ms : assez pour laisser une pile réseau se rétablir, assez court
+ * pour que trois essais ratés restent sous la seconde et demie — au-delà,
+ * l'attente coûterait plus que l'écran d'erreur qu'elle évite.
+ */
+const REPRISES = 2
+const ATTENTES_MS = [350, 900]
+
+/**
+ * Un import dynamique qui se retente avant de renoncer.
+ *
+ * ⛔ L'ERREUR FINALE EST CELLE DU PREMIER ESSAI, telle quelle. C'est elle que
+ * {@link isStaleChunkError} reconnaît et sur laquelle `ErrorBoundary` déclenche
+ * la purge de cache puis le rechargement : la réécrire ou l'envelopper ferait
+ * tomber la récupération du bundle périmé, qui reste le bon remède quand le
+ * fichier n'existe VRAIMENT plus. Retenter ne remplace pas cette voie, il lui
+ * retire les cas où il n'y avait rien à réparer.
+ *
+ * ⚠ AUCUN CACHE-BUSTER SUR LA REPRISE, et c'est délibéré : changer l'URL du
+ * module en ferait une SECONDE instance pour le navigateur. Deux copies d'un même
+ * module, c'est deux états qui divergent en silence — le prix est bien plus élevé
+ * que l'échec qu'on cherche à contourner. La purge cache-bustée existe pour ça,
+ * et elle passe par un `fetch`, pas par un `import`.
+ */
+export function importAvecReprise<T>(fabrique: () => Promise<T>): Promise<T> {
+  return (async () => {
+    let premiere: unknown
+    for (let essai = 0; essai <= REPRISES; essai += 1) {
+      try {
+        return await fabrique()
+      } catch (e) {
+        if (essai === 0) premiere = e
+        if (essai === REPRISES) throw premiere
+        await new Promise((r) => setTimeout(r, ATTENTES_MS[essai]))
+      }
+    }
+    // Inatteignable : la boucle rend ou relance.
+    throw premiere
+  })()
+}

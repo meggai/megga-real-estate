@@ -11,29 +11,30 @@
  * `AdminThemeProvider` compris (posé par `AdminConsoleRoute`).
  */
 import { lazy, Suspense } from 'react'
+import { importAvecReprise } from '@/lib/staleChunkRecovery'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import AdminShell from '@/components/admin/AdminShell'
 import ByParam from '@/components/layout/ByParam'
 
-const AdminDashboardPage = lazy(() => import('@/pages/admin/AdminDashboardPage'))
-const AdminAgenciesPage = lazy(() => import('@/pages/admin/AdminAgenciesPage'))
-const AdminAgencyDetailPage = lazy(() => import('@/pages/admin/AdminAgencyDetailPage'))
-const AdminUsersPage = lazy(() => import('@/pages/admin/AdminUsersPage'))
-const AdminEndUsersPage = lazy(() => import('@/pages/admin/AdminEndUsersPage'))
-const AdminMonitoringPage = lazy(() => import('@/pages/admin/AdminMonitoringPage'))
-const AdminModerationPage = lazy(() => import('@/pages/admin/AdminModerationPage'))
-const AdminCompliancePage = lazy(() => import('@/pages/admin/AdminCompliancePage'))
-const AdminKybReviewPage = lazy(() => import('@/pages/admin/AdminKybReviewPage'))
-const AdminOnboardingCallsPage = lazy(() => import('@/pages/admin/AdminOnboardingCallsPage'))
-const AdminCommunicationPage = lazy(() => import('@/pages/admin/AdminCommunicationPage'))
-const AdminFeatureFlagsPage = lazy(() => import('@/pages/admin/AdminFeatureFlagsPage'))
-const AdminPlansPage = lazy(() => import('@/pages/admin/AdminPlansPage'))
-const AdminLiveFeedPage = lazy(() => import('@/pages/admin/AdminLiveFeedPage'))
-const AdminSecurityAuditPage = lazy(() => import('@/pages/admin/AdminSecurityAuditPage'))
-const AdminNpsPage = lazy(() => import('@/pages/admin/AdminNpsPage'))
-const AdminAutonomyPage = lazy(() => import('@/pages/admin/AdminAutonomyPage'))
-const AdminToolUsagePage = lazy(() => import('@/pages/admin/AdminToolUsagePage'))
-const AdminLearningPage = lazy(() => import('@/pages/admin/AdminLearningPage'))
+const AdminDashboardPage = lazy(() => importAvecReprise(() => import('@/pages/admin/AdminDashboardPage')))
+const AdminAgenciesPage = lazy(() => importAvecReprise(() => import('@/pages/admin/AdminAgenciesPage')))
+const AdminAgencyDetailPage = lazy(() => importAvecReprise(() => import('@/pages/admin/AdminAgencyDetailPage')))
+const AdminUsersPage = lazy(() => importAvecReprise(() => import('@/pages/admin/AdminUsersPage')))
+const AdminEndUsersPage = lazy(() => importAvecReprise(() => import('@/pages/admin/AdminEndUsersPage')))
+const AdminMonitoringPage = lazy(() => importAvecReprise(() => import('@/pages/admin/AdminMonitoringPage')))
+const AdminModerationPage = lazy(() => importAvecReprise(() => import('@/pages/admin/AdminModerationPage')))
+const AdminCompliancePage = lazy(() => importAvecReprise(() => import('@/pages/admin/AdminCompliancePage')))
+const AdminKybReviewPage = lazy(() => importAvecReprise(() => import('@/pages/admin/AdminKybReviewPage')))
+const AdminOnboardingCallsPage = lazy(() => importAvecReprise(() => import('@/pages/admin/AdminOnboardingCallsPage')))
+const AdminCommunicationPage = lazy(() => importAvecReprise(() => import('@/pages/admin/AdminCommunicationPage')))
+const AdminFeatureFlagsPage = lazy(() => importAvecReprise(() => import('@/pages/admin/AdminFeatureFlagsPage')))
+const AdminPlansPage = lazy(() => importAvecReprise(() => import('@/pages/admin/AdminPlansPage')))
+const AdminLiveFeedPage = lazy(() => importAvecReprise(() => import('@/pages/admin/AdminLiveFeedPage')))
+const AdminSecurityAuditPage = lazy(() => importAvecReprise(() => import('@/pages/admin/AdminSecurityAuditPage')))
+const AdminNpsPage = lazy(() => importAvecReprise(() => import('@/pages/admin/AdminNpsPage')))
+const AdminAutonomyPage = lazy(() => importAvecReprise(() => import('@/pages/admin/AdminAutonomyPage')))
+const AdminToolUsagePage = lazy(() => importAvecReprise(() => import('@/pages/admin/AdminToolUsagePage')))
+const AdminLearningPage = lazy(() => importAvecReprise(() => import('@/pages/admin/AdminLearningPage')))
 
 /** Repli de chargement des chunks — neutre, aux couleurs de la console. */
 function ChunkFallback() {

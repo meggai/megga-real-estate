@@ -121,8 +121,21 @@ export interface AgentNotifications {
  * Centre de notifications agent : dérive des `CrmNotif` depuis les
  * `activity_events` non-utilisateur, avec compteur non-lu (last-seen + set
  * localStorage) et rafraîchissement Realtime. `limit` borne la lecture.
+ *
+ * ⛔ `abonne` N'EST PAS UN CONFORT — il est la contrepartie des écrans vivants.
+ * La cloche vit dans la bande d'onglets, et la bande est rendue par CHAQUE écran
+ * (le chrome est per-page par conception). Six écrans vivants, c'est donc six
+ * instances de ce hook. La REQUÊTE, elle, ne coûte qu'une fois : React Query la
+ * déduplique sur `['agent-notifications', limit]`. Le CANAL Realtime, non — il
+ * porte un `useId()`, donc six abonnements distincts sur le même INSERT, et six
+ * invalidations identiques à chaque écriture d'`activity_events`.
+ *
+ * Un seul écran est visible à la fois : seule sa bande s'abonne. Les cinq autres
+ * lisent le cache partagé, qu'elles verront rafraîchi comme les autres — et
+ * quand l'une d'elles devient visible, elle s'abonne à son tour et sa première
+ * lecture vient du même cache, sans requête.
  */
-export function useAgentNotifications(limit = 30): AgentNotifications {
+export function useAgentNotifications(limit = 30, abonne = true): AgentNotifications {
   const queryClient = useQueryClient()
   const channelId = useId()
   const [readIds, setReadIds] = useState<Set<string>>(() => loadReadIds())
@@ -145,6 +158,7 @@ export function useAgentNotifications(limit = 30): AgentNotifications {
 
   // Realtime — nouvelle notif instantanée (RLS scope déjà à l'agence).
   useEffect(() => {
+    if (!abonne) return
     const channel = supabase
       .channel(`agent-notifs-${channelId}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'activity_events' }, () => {
@@ -154,7 +168,7 @@ export function useAgentNotifications(limit = 30): AgentNotifications {
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [queryClient, channelId])
+  }, [queryClient, channelId, abonne])
 
   const items = useMemo<CrmNotif[]>(() => {
     return (query.data ?? []).map((ev) => {

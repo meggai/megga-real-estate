@@ -363,6 +363,53 @@ describe('crmTabs — les écrans qui restent VIVANTS', () => {
   it('sans actif, aucun écran — il n’y a rien à garder vivant', () => {
     expect(crmEcransVivants(pile, undefined, ['a', 'b'], 3)).toEqual([])
   })
+
+  /**
+   * ⛔ CE QUE COÛTE UN PLAFOND TROP BAS, compté au lieu d'être supposé.
+   *
+   * Le plafond est passé de 3 à 6 le 7 septembre 2026 (décision Julien), sur ce
+   * calcul-ci : Julien travaille à dix ou quinze onglets ouverts, et fait des
+   * allers-retours dans un GROUPE DE TRAVAIL — cinq ou six onglets, pas deux.
+   * Un plafond de 3 ne peut pas garder un groupe de 6 : chaque onglet qu'on
+   * rouvre a déjà été évincé, et l'écran est reconstruit (état local perdu,
+   * requêtes rejouées). La simulation ci-dessous rejoue le geste et compte les
+   * reconstructions — c'est un oracle reproductible, là où la mesure à l'écran
+   * dépend d'un volet d'aperçu et d'un ordonnanceur.
+   */
+  function reconstructions(idsGroupe: string[], tours: number, max: number): number {
+    const tabsGroupe = idsGroupe.map((id) => tab(id))
+    let recents: string[] = []
+    let vivants = new Set<string>()
+    let n = 0
+    for (let k = 0; k < idsGroupe.length * tours; k++) {
+      const actif = idsGroupe[k % idsGroupe.length]
+      if (!vivants.has(actif)) n += 1
+      // Même règle que `EcransVivants` : la récence décide de l'appartenance.
+      recents = [actif, ...recents.filter((x) => x !== actif)].slice(0, max)
+      vivants = new Set(crmEcransVivants(tabsGroupe, actif, recents, max).map((t) => t.id))
+    }
+    return n
+  }
+
+  it('⛔ un plafond de 3 ne garde AUCUN groupe de travail de six', () => {
+    const groupe = ['a', 'b', 'c', 'd', 'e', 'f']
+    // 24 bascules : l'onglet visé a toujours été évincé entre-temps.
+    expect(reconstructions(groupe, 4, 3)).toBe(24)
+  })
+
+  it('✅ un plafond de 6 ne paie que le PREMIER passage', () => {
+    const groupe = ['a', 'b', 'c', 'd', 'e', 'f']
+    // 6 sur 24 : le tour de chauffe, puis plus rien — 100 % → 25 %.
+    expect(reconstructions(groupe, 4, 6)).toBe(6)
+  })
+
+  it('⚠ et il ne promet rien au-delà de son propre nombre', () => {
+    // Sept onglets en rotation dans six créneaux : on revient toujours sur le
+    // seul qui vient d'être évincé. Le plafond déplace la limite, il ne
+    // l'efface pas — c'est pourquoi 24 onglets vivants restent exclus.
+    const sept = ['a', 'b', 'c', 'd', 'e', 'f', 'g']
+    expect(reconstructions(sept, 4, 6)).toBe(28)
+  })
 })
 
 describe('crmTabs — la pile des onglets FERMÉS', () => {

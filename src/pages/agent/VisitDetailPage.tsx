@@ -8,12 +8,29 @@
 //
 // Sync Realtime : tout update push du mobile arrive ici via useVisitRealtime.
 // Route : /dashboard/visits/:id
+//
+// ⛔ ELLE NE PORTAIT AUCUN CHROME jusqu'au 7 septembre 2026, et c'était visible :
+// `/dashboard/visits/:id` ouvre un onglet comme toute autre fiche (`visit` est
+// l'un des cinq genres de `crmTabRecordRef`, et `crm_tabs_resolve_labels` sait
+// en résoudre le libellé), mais l'écran rendait sa propre page pleine largeur.
+// Basculer sur cet onglet faisait donc DISPARAÎTRE la bande d'onglets ET la
+// barre latérale — plus aucun moyen d'en ressortir autrement que par le lien
+// « retour au calendrier ». Les trois autres fiches (contact, bien, deal)
+// montaient déjà `CrmWorkspace` ; celle-ci avait été oubliée.
+//
+// ⚠ Les trois routes qui restent SANS chrome le sont par choix et gardent ce
+// choix : `visits/new`, `transactions/:id/offre/:kind` et `import-lead` sont des
+// modales de plein écran (`position: fixed`, une croix pour sortir), pas des
+// fiches.
 
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { dossierPalette, DOSSIER_KEYFRAMES } from '@/components/crm-dossiers/tokens'
-import { useCrmDark } from '@/lib/crmDark'
+import { CRM_DARK_KEY, readCrmDark } from '@/lib/crmDark'
+import { crmPalette } from '@/components/crm/tokens'
+import CrmWorkspace from '@/components/crm/CrmWorkspace'
 import { CrmIcon } from '@/components/crm-dossiers/icons'
 import {
   CrmBlackPill,
@@ -48,65 +65,27 @@ export default function VisitDetailPage() {
   const { data: visit, isLoading, isError, error } = useVisitDetail(id)
   const { mutate: signBon } = useSignVisitBon()
   useVisitRealtime(id)
-  const dark = useCrmDark()
+  /**
+   * ⚠ `readCrmDark()` + état local, et non `useCrmDark()` : la barre latérale de
+   * cette page BASCULE désormais le thème (`setDark` lui est passé), et le hook
+   * est en lecture seule. Deux sources — l'état local pour `sp`, le hook pour
+   * `S` — divergeraient au clic. Même idiome qu'`AuditPage` et `CalendarPage`.
+   */
+  const [dark, setDark] = useState<boolean>(readCrmDark)
+  useEffect(() => {
+    if (typeof window !== 'undefined') window.localStorage.setItem(CRM_DARK_KEY, dark ? '1' : '0')
+  }, [dark])
   const S = useMemo(() => dossierPalette(dark), [dark])
+  const sp = useMemo(() => crmPalette(dark), [dark])
 
-  if (isLoading) {
-    return (
-      <div
-        style={{
-          minHeight: '100vh',
-          background: S.bgGradient,
-          display: 'grid',
-          placeItems: 'center',
-          color: S.muted,
-          fontFamily: S.font,
-        }}
-      >
-        {t('visitDetail.loading')}
-      </div>
-    )
-  }
-  if (isError) {
-    return (
-      <div
-        style={{
-          minHeight: '100vh',
-          background: S.bgGradient,
-          display: 'grid',
-          placeItems: 'center',
-          color: S.errDarker,
-          fontFamily: S.font,
-          padding: 40,
-          textAlign: 'center',
-        }}
-      >
-        {t('visitDetail.loadError', {
-          message: error?.message ?? t('visitDetail.unknownError'),
-        })}
-      </div>
-    )
-  }
-  if (!visit) {
-    return (
-      <div
-        style={{
-          minHeight: '100vh',
-          background: S.bgGradient,
-          display: 'grid',
-          placeItems: 'center',
-          color: S.muted,
-          fontFamily: S.font,
-        }}
-      >
-        {t('visitDetail.notFound')}
-      </div>
-    )
-  }
-
-  const isDone = visit.kind === 'done'
-
-  return (
+  /**
+   * La coquille — barre latérale, bande d'onglets, puis le contenu.
+   *
+   * ⚠ Régime de hauteur `minHeight`, pas `height: 100vh` : cette fiche défile
+   * (le bon et le rapport s'empilent). C'est celui d'`AuditPage`, l'autre des
+   * deux régimes que `CrmWorkspace` accepte — voir son en-tête.
+   */
+  const coquille = (contenu: ReactNode) => (
     <div
       data-screen-label="Fiche Visite"
       style={{
@@ -117,12 +96,51 @@ export default function VisitDetailPage() {
         fontFamily: S.font,
       }}
     >
+      <div style={{ display: 'flex', minHeight: '100vh' }}>
+        <CrmWorkspace active="calendar" sp={sp} dark={dark} setDark={setDark}>
+          {contenu}
+        </CrmWorkspace>
+      </div>
+    </div>
+  )
+
+  if (isLoading) {
+    return coquille(
+      <main style={{ flex: 1, minWidth: 0, display: 'grid', placeItems: 'center', color: S.muted }}>
+        {t('visitDetail.loading')}
+      </main>,
+    )
+  }
+  if (isError) {
+    return coquille(
+      <main style={{
+        flex: 1, minWidth: 0, display: 'grid', placeItems: 'center',
+        color: S.errDarker, padding: 40, textAlign: 'center',
+      }}>
+        {t('visitDetail.loadError', {
+          message: error?.message ?? t('visitDetail.unknownError'),
+        })}
+      </main>,
+    )
+  }
+  if (!visit) {
+    return coquille(
+      <main style={{ flex: 1, minWidth: 0, display: 'grid', placeItems: 'center', color: S.muted }}>
+        {t('visitDetail.notFound')}
+      </main>,
+    )
+  }
+
+  const isDone = visit.kind === 'done'
+
+  return coquille(
+    <>
       <style>{DOSSIER_KEYFRAMES}</style>
       <style>{`
         @keyframes vdPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
       `}</style>
 
-      <main style={{ padding: '28px 40px 80px', minWidth: 0 }}>
+      <main style={{ flex: 1, minWidth: 0, padding: '28px 40px 80px' }}>
         {/* Header */}
         <header
           style={{
@@ -317,6 +335,6 @@ export default function VisitDetailPage() {
               separate sprint. */}
         </div>
       </main>
-    </div>
+    </>,
   )
 }

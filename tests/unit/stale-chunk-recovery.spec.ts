@@ -10,7 +10,7 @@
  * récupération : reconnaissance du motif, extraction de l'URL, parcours des
  * dépendances, purge bornée, drapeau de session, cache-buster.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   STALE_CHUNK_PATTERNS,
   isStaleChunkError,
@@ -20,6 +20,7 @@ import {
   shouldAttemptChunkRecovery,
   markChunkRecoveryAttempted,
   cacheBustedReloadUrl,
+  importAvecReprise,
 } from '@/lib/staleChunkRecovery'
 
 /** Message réel observé dans le Chrome de l'incident (Sentry + console). */
@@ -170,5 +171,70 @@ describe('cacheBustedReloadUrl', () => {
     expect(once).toBe('https://app.megga.ch/dashboard/identite?tab=2&_v=1700000000000')
     const twice = cacheBustedReloadUrl(once, 1700000000001)
     expect(twice).toBe('https://app.megga.ch/dashboard/identite?tab=2&_v=1700000000001')
+  })
+})
+
+describe("importAvecReprise — un raté réseau ne condamne plus une route", () => {
+  /**
+   * ⛔ CE QUE CE BLOC ÉPROUVE, ET POURQUOI IL EXISTE. `React.lazy` MÉMORISE la
+   * promesse de sa fabrique : un import qui échoue une fois échoue pour
+   * toujours, jusqu'au rechargement. Un raté d'une demi-seconde — Wi-Fi qui se
+   * réveille après quelques minutes d'absence, onglet que Chrome vient de
+   * dégeler — condamnait donc la route, et la seule issue était l'écran
+   * d'erreur puis un rechargement. C'est le symptôme rapporté par Julien le
+   * 7 septembre 2026.
+   */
+  afterEach(() => { vi.useRealTimers() })
+
+  it("n'appelle la fabrique QU'UNE fois quand elle réussit", async () => {
+    const fabrique = vi.fn(async () => 'module')
+    await expect(importAvecReprise(fabrique)).resolves.toBe('module')
+    expect(fabrique).toHaveBeenCalledTimes(1)
+  })
+
+  it('récupère un échec transitoire au deuxième essai', async () => {
+    vi.useFakeTimers()
+    let n = 0
+    const fabrique = vi.fn(async () => {
+      n += 1
+      if (n === 1) throw new Error('Failed to fetch dynamically imported module: /assets/X.js')
+      return 'module'
+    })
+    const p = importAvecReprise(fabrique)
+    await vi.advanceTimersByTimeAsync(400)
+    await expect(p).resolves.toBe('module')
+    expect(fabrique).toHaveBeenCalledTimes(2)
+  })
+
+  it('renonce après trois essais — pas davantage', async () => {
+    vi.useFakeTimers()
+    const fabrique = vi.fn(async () => { throw new Error('Importing a module script failed.') })
+    const p = importAvecReprise(fabrique)
+    // ⚠ La promesse est capturée AVANT d'avancer l'horloge : sans quoi le rejet
+    // resterait un instant sans gestionnaire et Node le signalerait.
+    const attendu = expect(p).rejects.toThrow('Importing a module script failed.')
+    await vi.advanceTimersByTimeAsync(2000)
+    await attendu
+    expect(fabrique).toHaveBeenCalledTimes(3)
+  })
+
+  it("⛔ relance l'erreur du PREMIER essai — c'est elle que la récupération reconnaît", async () => {
+    vi.useFakeTimers()
+    let n = 0
+    const fabrique = vi.fn(async () => {
+      n += 1
+      // Le second échec ne ressemble PLUS à un échec de chunk : si c'était lui
+      // qu'on relançait, `ErrorBoundary` ne purgerait rien et le bundle périmé
+      // resterait un cul-de-sac.
+      throw n === 1
+        ? new Error('Failed to fetch dynamically imported module: /assets/X.js')
+        : new Error('NetworkError')
+    })
+    const p = importAvecReprise(fabrique)
+    const capture = p.catch((e) => e as Error)
+    await vi.advanceTimersByTimeAsync(2000)
+    const erreur = await capture
+    expect(isStaleChunkError(erreur)).toBe(true)
+    expect(erreur.message).toContain('Failed to fetch dynamically imported module')
   })
 })
