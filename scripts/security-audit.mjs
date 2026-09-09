@@ -65,6 +65,20 @@ function qualifiedName(name) {
   return `(?:(?:"public"|public)\\s*\\.\\s*)?"?${name}"?`
 }
 
+/**
+ * Blanchit les commentaires JS/TS (// ... et une paire slash-etoile), en preservant
+ * les sauts de ligne pour ne pas decaler les numeros de ligne. Meme role que
+ * stripSqlComments : un motif ne doit jamais matcher la prose qui raconte le code.
+ * Approximation assumee : une sequence ressemblant a un commentaire DANS une chaine
+ * serait blanchie aussi. Sans consequence ici -- on ne cherche que la PRESENCE d'une
+ * garde, et blanchir de trop ne peut que faire crier la porte, jamais la taire.
+ */
+function stripJsComments(code) {
+  return code
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1) => p1 + ' '.repeat(m.length - p1.length))
+}
+
 // ── Check 1: RLS enabled on critical tables ────────────────────────────────
 
 function checkRlsEnabled(migrations) {
@@ -133,6 +147,34 @@ function checkSuperAdminFunction(migrations) {
   }
 }
 
+/**
+ * Policies `USING (true)` DELIBEREES. Une entree ici n'est pas un laissez-passer :
+ * elle porte l'invariant qui la rend sure, et l'exemption TOMBE si l'invariant
+ * tombe. Sans ca on n'aurait pas repare la porte, on l'aurait baillonnee -- et une
+ * garde qu'on fait taire par liste est exactement ce qui l'a rendue illisible
+ * pendant huit semaines.
+ */
+const PERMISSIVE_POLICY_EXEMPTIONS = [
+  {
+    policy: 'read_agency_profiles',
+    table: 'agency_profiles',
+    raison:
+      "L'annuaire d'agences est lisible par tout compte connecte, c'est voulu (jointure de " +
+      'Matching Recherche). La confidentialite ne repose PAS sur le predicat de la policy ' +
+      'mais sur des privileges de COLONNE : la migration 20260729130000 revoque le SELECT de ' +
+      'TABLE a `authenticated` puis le re-grante colonne par colonne en excluant `claim_token`, ' +
+      "le jeton qui permet de revendiquer un profil d'agence. Verifie en production le " +
+      '03.09.2026 : `authenticated` lit 31 colonnes sur 32, `claim_token` exclu.',
+    // ATTENTION, piege de mesure a ne pas refaire : has_table_privilege('authenticated',
+    // 'public.agency_profiles','SELECT') rend FALSE ici, ce qui donne a croire que la policy
+    // est inerte. Elle ne l'est pas : cette fonction ne voit que le privilege de TABLE, pas
+    // les privileges de COLONNE qui portent reellement la lecture.
+    invariant: '`claim_token` reste hors du GRANT de colonnes accorde a `authenticated`',
+    tientEncore: (allSql) =>
+      !/GRANT\s+SELECT\s*\([^)]*\bclaim_token\b[^)]*\)\s+ON\s+(?:public\.)?"?agency_profiles"?\s+TO\s+[^;]*\bauthenticated\b/i.test(allSql),
+  },
+]
+
 // ── Check 3: No USING (true) on critical tables for authenticated ──────────
 //
 // If a permissive policy is created in an early migration but dropped by name
@@ -179,6 +221,25 @@ function checkPermissivePolicies(migrations) {
       const policyNameMatch = text.match(/CREATE\s+POLICY\s+"?([^"\s]+)"?/i)
       const policyName = policyNameMatch ? policyNameMatch[1].replace(/"/g, '') : '<unknown>'
 
+      const exemption = PERMISSIVE_POLICY_EXEMPTIONS.find(
+        (e) => e.policy === policyName && e.table === tableName,
+      )
+      if (exemption) {
+        const combinedSql = migrations.map((x) => stripSqlComments(x.content)).join('\n')
+        if (exemption.tientEncore(combinedSql)) {
+          notes.push(
+            `Policy "${policyName}" on "${tableName}" is USING (true) BY DESIGN -- ${exemption.raison}`,
+          )
+          continue
+        }
+        // L'invariant est tombe : l'exemption ne vaut plus, et on le DIT en toutes lettres
+        // plutot que de laisser la liste couvrir un changement qu'elle n'avait pas prevu.
+        anomalies.push(
+          `Policy "${policyName}" on "${tableName}" was exempted, but its invariant no longer holds: ${exemption.invariant}`,
+        )
+        continue
+      }
+
       const droppedIn = policyDroppedLater(policyName, tableName, m.file, migrations)
       if (droppedIn) {
         notes.push(
@@ -203,13 +264,32 @@ function checkEdgeFunctionGuards() {
       anomalies.push(`Edge Function "${fnName}/index.ts" is missing`)
       continue
     }
-    const code = fs.readFileSync(indexPath, 'utf8')
+    // Les COMMENTAIRES sont blanchis avant l'analyse. Sans ca, une fonction qui se
+    // contente de PARLER de is_super_admin() dans un commentaire passe la garde --
+    // c'est le defaut symetrique de celui corrige ci-dessous : un motif qui attrape
+    // la prose au lieu du code.
+    const code = stripJsComments(fs.readFileSync(indexPath, 'utf8'))
 
     // Look for typical super_admin guard:
     //   profile?.role !== 'super_admin' → throw
     //   or role === 'super_admin' with return/throw on false
     //   or calls to is_super_admin() RPC
+    //   or the shared guard requireSuperAdmin() from _shared/require-super-admin.ts
+    //
+    // requireSuperAdmin MANQUAIT, et c'est ce qui a rendu cette porte rouge huit
+    // semaines d'affilee (13.07 -> 31.08.2026) sur deux faux positifs :
+    // admin-monitoring et admin-stripe-metrics portent une garde REELLE (role +
+    // allowlist e-mail, 401/403), simplement deportee dans _shared/. Une porte rouge
+    // pour de mauvaises raisons cesse d'etre lue, et le jour ou une vraie anomalie
+    // s'ajoute elle est la quatrieme ligne d'un rapport qu'on ignore.
+    //
+    // On exige l'APPEL requireSuperAdmin( , pas l'import : importer un symbole sans
+    // jamais l'appeler ne garde rien.
+    // Ne PAS elargir aux autres gardes de _shared (requireAgentAuth, isServiceSecret...) :
+    // ces trois fonctions sont des endpoints d'administration, un agent authentifie
+    // n'est pas un super-admin.
     const hasGuard =
+      /\brequireSuperAdmin\s*\(/.test(code) ||
       /role\s*[!=]==?\s*['"`]super_admin['"`]/.test(code) ||
       /['"`]super_admin['"`]\s*[!=]==?\s*.*role/.test(code) ||
       /rpc\(\s*['"`]is_super_admin['"`]/.test(code) ||
@@ -262,6 +342,48 @@ async function runtimeProbe() {
 }
 
 // ── Email notification ─────────────────────────────────────────────────────
+
+/**
+ * Eprouve le canal d'alerte AVANT d'en avoir besoin.
+ *
+ * Pourquoi : la cle Resend des GitHub Actions repond 401 depuis au moins le
+ * 27.07.2026, et personne ne l'a su parce que l'echec d'envoi n'etait qu'un
+ * console.error au milieu d'un run deja rouge. Un canal d'alerte ne se decouvre
+ * pas mort le jour ou on s'en sert : c'est le jour ou l'alerte compte.
+ *
+ * Ne fait PAS echouer l'audit a lui seul -- la cle ne se regenere pas depuis la CI,
+ * et rendre la porte rouge en permanence pour une chose que seul un humain peut
+ * corriger reproduirait exactement le defaut qu'on repare ici. On emet une
+ * annotation GitHub Actions, qui remonte dans le resume du run meme au vert.
+ */
+async function checkAlertChannel() {
+  const resendKey = process.env.RESEND_API_KEY
+  if (!resendKey) {
+    notes.push("Canal d'alerte : RESEND_API_KEY absente -- aucune anomalie ne pourrait etre envoyee")
+    console.log('::warning title=Canal alerte::RESEND_API_KEY absente : le rapport ne peut etre envoye a personne')
+    return false
+  }
+  try {
+    // Endpoint le moins couteux qui exige une cle valide. On ne lit que le STATUT.
+    const res = await fetch('https://api.resend.com/domains', {
+      headers: { Authorization: `Bearer ${resendKey}` },
+    })
+    if (res.status === 401 || res.status === 403) {
+      notes.push(`Canal d'alerte : cle Resend REFUSEE (HTTP ${res.status}) -- a regenerer`)
+      console.log(`::warning title=Canal alerte mort::La cle Resend est refusee (HTTP ${res.status}). Les anomalies de securite ne sont envoyees a PERSONNE. Regenerer la cle chez Resend et remplacer le secret GitHub RESEND_API_KEY.`)
+      return false
+    }
+    if (!res.ok) {
+      notes.push(`Canal d'alerte : reponse inattendue de Resend (HTTP ${res.status})`)
+      return false
+    }
+    notes.push("Canal d'alerte : cle Resend acceptee")
+    return true
+  } catch (err) {
+    notes.push(`Canal d'alerte : injoignable (${String(err).slice(0, 120)})`)
+    return false
+  }
+}
 
 async function sendEmail(anomalies) {
   const resendKey = process.env.RESEND_API_KEY
@@ -318,6 +440,7 @@ async function main() {
   checkPermissivePolicies(migrations)
   checkEdgeFunctionGuards()
   await runtimeProbe()
+  const canalVivant = await checkAlertChannel()
 
   if (notes.length) {
     console.log('\nNotes:')
@@ -333,6 +456,17 @@ async function main() {
   anomalies.forEach((a) => console.error(`  - ${a}`))
 
   await sendEmail(anomalies)
+  if (!canalVivant) {
+    // Les anomalies existent ET ne sont parties nulle part : c'est la combinaison
+    // dangereuse, et elle doit etre le DERNIER mot du journal, pas une ligne perdue
+    // au milieu. Le run echouait deja ; ce qui manquait, c'est de le dire.
+    console.error(
+      "\n⛔ LES ANOMALIES CI-DESSUS N'ONT ETE ENVOYEES A PERSONNE : le canal d'alerte est mort.\n" +
+      '   Ce run est visible dans Actions, mais aucun e-mail n\'est parti. Regenerer la cle\n' +
+      '   Resend et remplacer le secret GitHub RESEND_API_KEY.',
+    )
+    console.log('::error title=Alerte non delivree::Anomalies detectees mais non envoyees : canal Resend mort')
+  }
   process.exit(1)
 }
 
